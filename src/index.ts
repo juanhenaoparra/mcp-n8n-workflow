@@ -117,8 +117,14 @@ async function fetchWithAuth(endpoint: string, options: RequestInit = {}) {
   return response.json();
 }
 
-async function listWorkflows(): Promise<N8NWorkflow[]> {
-  return fetchWithAuth('/workflows');
+async function listWorkflows(params?: { active?: boolean, tags?: string, limit?: number, cursor?: string }): Promise<N8NWorkflow[]> {
+  const searchParams = new URLSearchParams();
+  if (params?.active !== undefined) searchParams.set('active', String(params.active));
+  if (params?.tags) searchParams.set('tags', params.tags);
+  if (params?.limit) searchParams.set('limit', String(Math.min(params.limit, 25)));
+  if (params?.cursor) searchParams.set('cursor', params.cursor);
+
+  return fetchWithAuth('/workflows' + (searchParams.toString() ? '?' + searchParams.toString() : ''));
 }
 
 async function getWorkflow(id: string): Promise<N8NWorkflow> {
@@ -214,7 +220,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "List all N8N workflows",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {
+            "active": {
+              type: "boolean",
+              description: "Whether to filter by active workflows"
+            },
+            "tags": {
+              type: "string",
+              description: "Tags to filter by. Comma separated list of tags"
+            },
+            "limit": {
+              type: "number",
+              maximum: 250,
+              description: "Maximum number of workflows to return"
+            },
+            "cursor": {
+              type: "string",
+              description: "Cursor for pagination"
+            }
+          },
           required: []
         }
       },
@@ -346,7 +370,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (request.params.name) {
     case "list_workflows": {
-      const workflows = await listWorkflows();
+      const args = request.params.arguments as { active?: boolean, tags?: string, limit?: number, cursor?: string } | undefined;
+
+      const workflows = await listWorkflows(args);
       return {
         content: [{
           type: "text",
