@@ -41,6 +41,20 @@ interface N8NWorkflowExecution {
   status: string;
 }
 
+interface N8NCredential {
+  id: string;
+  name: string;
+  type: string;
+  data: Record<string, any>;
+}
+
+interface N8NCredentialSchema {
+  additionalProperties: boolean;
+  type: string;
+  properties: Record<string, any>;
+  required: string[];
+}
+
 /**
  * Type alias for a note object.
  */
@@ -72,9 +86,36 @@ const server = new Server(
   }
 );
 
-function writeErrorToFile(msg: string) {
-  const errorFile = path.join(process.cwd(), 'error.log');
-  fs.appendFileSync(errorFile, `${new Date().toISOString()} - ${msg}\n`);
+enum LogSeverity {
+  INFO = 'INFO',
+  WARN = 'WARN',
+  ERROR = 'ERROR'
+}
+
+interface LogPayload {
+  [key: string]: any;
+}
+
+function log(name: string, severity: LogSeverity, payload: LogPayload) {
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    timestamp,
+    name,
+    severity,
+    ...payload
+  };
+
+  switch (severity) {
+    case LogSeverity.ERROR:
+      console.error(JSON.stringify(logEntry));
+      break;
+    case LogSeverity.WARN:
+      console.warn(JSON.stringify(logEntry));
+      break;
+    case LogSeverity.INFO:
+      console.info(JSON.stringify(logEntry));
+      break;
+  }
 }
 
 /**
@@ -99,7 +140,10 @@ async function fetchWithAuth(endpoint: string, options: RequestInit = {}) {
     throw new Error('N8N_API_KEY is required');
   }
 
-  writeErrorToFile("doing request to: " + url);
+  log('do_n8n_api_request', LogSeverity.INFO, {
+    url,
+    method: options.method || 'GET'
+  });
 
   const headers = new Headers({
     'X-N8N-API-KEY': N8N_API_KEY,
@@ -110,7 +154,13 @@ async function fetchWithAuth(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(url, { ...options, headers });
 
   if (!response.ok) {
-    writeErrorToFile("N8N API error: " + response.statusText);
+    log('do_n8n_api_request_failed', LogSeverity.ERROR, {
+      url,
+      method: options.method || 'GET',
+      status: response.status,
+      statusText: response.statusText
+    });
+
     throw new Error(`N8N API error: ${response.statusText}`);
   }
 
@@ -167,6 +217,17 @@ async function activateWorkflow(id: string, active: boolean): Promise<N8NWorkflo
   return fetchWithAuth(`/workflows/${id}/${active ? 'activate' : 'deactivate'}`, {
     method: 'POST',
   });
+}
+
+async function createCredential(data: { name: string; type: string; data: Record<string, any> }): Promise<N8NCredential> {
+  return fetchWithAuth('/credentials', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+async function getCredentialSchema(type: string): Promise<N8NCredentialSchema> {
+  return fetchWithAuth(`/credentials/schema/${type}`);
 }
 
 /**
@@ -359,6 +420,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["workflowId", "active"]
         }
+      },
+      {
+        name: "create_credential",
+        description: "Create a new credential",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "Name of the credential"
+            },
+            type: {
+              type: "string",
+              description: "Type of the credential (e.g., 'githubApi')"
+            },
+            data: {
+              type: "object",
+              description: "Credential data object containing the required fields"
+            }
+          },
+          required: ["name", "type", "data"]
+        }
+      },
+      {
+        name: "get_credential_schema",
+        description: "Get the required schema for a specific credential type",
+        inputSchema: {
+          type: "object",
+          properties: {
+            credentialTypeName: {
+              type: "string",
+              description: "Name of the credential type to get the schema for"
+            }
+          },
+          required: ["credentialTypeName"]
+        }
       }
     ]
   };
@@ -462,6 +559,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{
           type: "text",
           text: `Workflow ${workflow.id} ${active ? 'activated' : 'deactivated'}`
+        }]
+      };
+    }
+
+    case "create_credential": {
+      const args = request.params.arguments as { name: string; type: string; data: Record<string, any> } | undefined;
+      if (!args?.name || !args?.type || !args?.data) {
+        throw new Error("Name, type, and data are required");
+      }
+
+      const credential = await createCredential(args);
+      return {
+        content: [{
+          type: "text",
+          text: `Created credential ${credential.id}: ${credential.name} (${credential.type})`
+        }]
+      };
+    }
+
+    case "get_credential_schema": {
+      const credentialTypeName = String(request.params.arguments?.credentialTypeName);
+      if (!credentialTypeName) {
+        throw new Error("Credential type name is required");
+      }
+
+      const schema = await getCredentialSchema(credentialTypeName);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(schema, null, 2)
         }]
       };
     }
